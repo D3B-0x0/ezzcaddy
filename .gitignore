@@ -1,0 +1,3 @@
+*.env
+caddy.env
+geoipupdate.env

@@ -1,0 +1,26 @@
+# Copy to Caddyfile and edit. Start with ONE site, verify, then add more.
+# Validate any change before reloading:
+#   docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+{
+    # Uncomment for wildcard certs via Cloudflare DNS-01
+    # (needs CLOUDFLARE_API_TOKEN in caddy.env):
+    # acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+
+    # Uncomment for CrowdSec (needs a crowdsec container on the same
+    # Docker network + CROWDSEC_CADDY_KEY in caddy.env):
+    # order crowdsec first
+    # order appsec after crowdsec
+    # crowdsec {
+    #     api_url http://crowdsec:8080
+    #     api_key {env.CROWDSEC_CADDY_KEY}
+    #     appsec_url http://crowdsec:7422
+    # }
+}
+
+example.com {
+    # crowdsec   # uncomment with the crowdsec block above
+    # appsec     # uncomment with the crowdsec block above
+    encode zstd gzip
+    reverse_proxy app:3000
+}

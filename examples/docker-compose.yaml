@@ -1,0 +1,39 @@
+services:
+  caddy:
+    image: d3b0x0/caddy:latest
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "80:80/udp"    # HTTP/3 (QUIC) — drop if you don't want it
+      - "443:443/udp"  # HTTP/3 (QUIC) — drop if you don't want it
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # ACME certs + state — keep this volume
+      - caddy_config:/config
+      # - geoip-data:/usr/share/GeoIP:ro   # uncomment with the geoipupdate service below
+    env_file:
+      - ./caddy.env           # CLOUDFLARE_API_TOKEN, CROWDSEC_CADDY_KEY (600, never commit)
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # --- optional: MaxMind DB refresher (24h) ---
+  # 1. cp geoipupdate.env.example geoipupdate.env && fill in your account details
+  # 2. uncomment the service + the geoip-data volume mount above
+  # geoipupdate:
+  #   image: ghcr.io/maxmind/geoipupdate:latest
+  #   restart: unless-stopped
+  #   env_file:
+  #     - ./geoipupdate.env
+  #   volumes:
+  #     - geoip-data:/usr/share/GeoIP
+
+volumes:
+  caddy_data:
+  caddy_config:
+  # geoip-data:
