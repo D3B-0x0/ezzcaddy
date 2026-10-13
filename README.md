@@ -31,6 +31,16 @@ docker logs -f caddy
 
 Pin a dated tag in production (`d3b0x0/caddy:20261014`); `latest` moves.
 
+## Updating
+
+You don't rebuild by hand. Pushes that touch the `Dockerfile` rebuild and
+push automatically, plus a **weekly scheduled build** (Sundays) that floats to
+the newest `caddy:2` base and plugin releases — the `--with` lines are
+unpinned on purpose. Short SHAs are also tagged, so any build is
+reproducible. A manual run is one click: Actions → "Build and push Caddy
+image" → Run workflow. Then on your box: `docker compose pull caddy &&
+docker compose up -d`.
+
 ## Common setups
 
 **Plain reverse proxy** — no modules needed, works out of the box:
