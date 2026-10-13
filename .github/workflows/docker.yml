@@ -53,6 +53,9 @@ jobs:
           # compile painfully slow — add it when a Pi actually needs it.
           platforms: linux/amd64
           push: true
+          # pull the base even when cached: without this the weekly rebuild
+          # can reuse a stale caddy:2 layer and "update" nothing at all.
+          pull: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
