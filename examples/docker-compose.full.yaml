@@ -1,0 +1,336 @@
+# =============================================================================
+# ezzcaddy — UNIVERSAL secure reverse-proxy stack
+# =============================================================================
+# PHILOSOPHY: nothing is hard-coded, nothing is on behind your back.
+# Every feature is OPT-IN by uncommenting. The only thing that runs as-is
+# is plain Caddy (HTTP->HTTPS redirects + one demo backend, also commented).
+#
+# PICK YOUR MODE (uncomment what you want, leave the rest commented):
+#
+#   Mode 0 — MINIMAL (default, works with zero secrets):
+#     caddy only. Edit ONE site block in Caddyfile.full, point it at your app.
+#
+#   Mode 1 — STANDARD (caddy + crowdsec WAF):
+#     1. uncomment the `crowdsec:` service below
+#     2. uncomment the `crowdsec:` + `appsec:` lines in Caddyfile.full global block
+#     3. set CROWDSEC_CADDY_KEY in caddy.env (get it via `cscli bouncers add caddy`)
+#     4. add `crowdsec` + `appsec` inside each site block you want protected
+#
+#   Mode 2 — SSO (caddy + oauth2-proxy + pocket-id):
+#     1. uncomment the `pocket-id:` service below, set APP_URL in pocketid.env,
+#        open https://<your-auth-domain> once, create admin, create OIDC client
+#     2. uncomment the `oauth2-proxy:` service below, fill oauth2.env
+#        (issuer = your pocket-id URL, client ID/secret from step 1)
+#     3. in Caddyfile.full: uncomment the (sso-gate) snippet + gate the sites
+#        you want private. Leave public sites ungated (API backends, etc.)
+#
+#   Mode 3 — MAX (everything): Mode 1 + Mode 2 + geoipupdate below.
+#     Add country gates + scoped rate_limit in Caddyfile.full per site.
+#
+# FIRST-RUN CHECKLIST (all user choice, no magic):
+#   [ ] cp examples/caddy.env.example     caddy.env       (+ chmod 600, fill)
+#   [ ] cp examples/oauth2.env.example    oauth2.env      (only if SSO mode)
+#   [ ] cp examples/pocketid.env.example  pocketid.env    (only if SSO mode)
+#   [ ] cp examples/geoipupdate.env.example geoipupdate.env (only if GeoIP mode)
+#   [ ] cp examples/Caddyfile.full        Caddyfile       (then edit your domains)
+#   [ ] docker compose -f docker-compose.full.yaml config   (lint, no secrets shown)
+#   [ ] docker compose -f docker-compose.full.yaml up -d
+#
+# FILE MAP (this directory):
+#   docker-compose.full.yaml  <- YOU ARE HERE (all services, all commented)
+#   Caddyfile.full            <- all snippets + 4 site recipes (public/waf/sso/max)
+#   caddy.env.example         <- DNS token + crowdsec bouncer key (caddy only)
+#   oauth2.env.example        <- oauth2-proxy OIDC settings (SSO mode)
+#   pocketid.env.example      <- pocket-id settings (SSO mode)
+#   geoipupdate.env.example   <- MaxMind account (GeoIP mode)
+#
+# SECRETS RULE: real *.env files are git-ignored. Never commit them.
+# Every secret has a matching *.env.example with EMPTY values. If in doubt:
+#   git status --short   (should show NO .env files)
+# =============================================================================
+
+name: ezzcaddy
+# ^^^ YOUR CHOICE: rename this to your project name. Affects container prefix
+# (`ezzcaddy-caddy-1`) and volume prefix. Safe to change any time.
+
+# ---------------------------------------------------------------------------
+# SHARED LOGGING DEFAULTS — YOUR CHOICE: keep, tune, or delete per service.
+# json-file with rotation keeps a runaway log from filling your disk.
+# Set max-size/max-file to whatever fits your box.
+# ---------------------------------------------------------------------------
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"     # YOUR CHOICE: per-file cap. 10m is sane for VPS.
+    max-file: "3"       # YOUR CHOICE: rotated files kept. 3 = ~30MB max/service.
+    compress: "true"    # YOUR CHOICE: gzip rotated logs. Keep true unless debugging.
+
+services:
+  # ===========================================================================
+  # CADDY — the only REQUIRED service. Everything else is optional.
+  # Image: d3b0x0/caddy (this repo's build) — swap tag to pin a date.
+  #   YOUR CHOICE: `latest` floats (new weekly build), `YYYYMMDD` freezes.
+  #   Production advice: pin a date, bump deliberately.
+  # ===========================================================================
+  caddy:
+    image: d3b0x0/caddy:${CADDY_TAG:-latest}
+    # ^^^ YOUR CHOICE: export CADDY_TAG=20261014 to pin. Default: latest.
+    container_name: ${CADDY_NAME:-caddy}
+    # ^^^ YOUR CHOICE: container name. Default: caddy.
+    restart: unless-stopped
+    # ^^^ YOUR CHOICE: unless-stopped (survives reboot, respects manual stop)
+    #     alternatives: always (restarts even after manual stop), no (dev only).
+    networks:
+      - proxy
+      # ^^^ REQUIRED: backends reach caddy by name on this net. Your apps must
+      #     ALSO join `proxy` (add `networks: [proxy]` + external ref, or run
+      #     them in THIS file). No shared net = 502 Bad Gateway.
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      # ^^^ YOUR CHOICE: host:container. Change left side to remap (8080:80).
+      - "${HTTPS_PORT:-443}:443"
+      # ^^^ YOUR CHOICE: same. 443 must stay 443 for public ACME HTTP-01;
+      #     DNS-01 (recommended) works on ANY port, even behind NAT.
+      # --- HTTP/3 (QUIC/UDP) — YOUR CHOICE: uncomment for faster mobile web.
+      # --- Costs nothing, breaks nothing. Comment out to keep port table clean.
+      # - "${HTTP_PORT:-80}:80/udp"
+      # - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # ^^^ REQUIRED (ro = read-only): your Caddyfile. Start from Caddyfile.full.
+      #     Validate before reload:
+      #       docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - caddy_data:/data
+      # ^^^ REQUIRED: ACME certs + state. LOSE THIS = reissue all certs.
+      #     Let's Encrypt rate-limit: 50/week/domain. Back it up or else.
+      - caddy_config:/config
+      # ^^^ REQUIRED but disposable: runtime config cache. Safe to wipe.
+      # --- GeoIP DB — YOUR CHOICE: uncomment ONLY with geoipupdate below.
+      # - geoip-data:/usr/share/GeoIP:ro
+      # --- CrowdSec log share — YOUR CHOICE: uncomment ONLY with crowdsec below.
+      # --- Lets CrowdSec read Caddy access logs for L7 scenarios (AppSec).
+      # - ./logs:/shared-logs
+    env_file:
+      - ./caddy.env
+      # ^^^ REQUIRED file (chmod 600): DNS provider token + crowdsec bouncer key.
+      #     See caddy.env.example. Empty values = those features stay inert.
+      #     Caddyfile reads them as {env.VAR} at RUNTIME — never baked in image.
+    # --- Host gateway — YOUR CHOICE: uncomment ONLY if a backend lives on the
+    # --- HOST network (e.g. oauth2-proxy in host mode, like the author's VPS).
+    # --- Bridge-mode backends (this file's default) do NOT need this.
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    healthcheck:
+      # ^^^ YOUR CHOICE: keep. Restarts nothing by itself, but `docker ps`
+      #     shows unhealthy instead of silently dead. Admin API :2019 stays
+      #     INSIDE the container — never publish it.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+
+  # ===========================================================================
+  # CROWDSEC — L7 WAF + IP bans. OPTIONAL, OFF by default.
+  # YOUR CHOICE: uncomment this ENTIRE block for Mode 1 / Mode 3.
+  # What it is: reads Caddy logs + own scenarios, tells Caddy (via bouncer
+  # key) to 403 attackers, captcha bots, or rate-limit floods.
+  # Cost: ~200MB RAM, one more volume set. Benefit: scanners die at the edge.
+  # Docs: https://docs.crowdsec.net  Acquis: mount YOUR log paths below.
+  # ===========================================================================
+  # crowdsec:
+  #   image: docker.io/crowdsecurity/crowdsec:${CROWDSEC_TAG:-latest-debian}
+  #   # ^^^ YOUR CHOICE: latest-debian is the stable line. Pin a version to freeze.
+  #   container_name: ${CROWDSEC_NAME:-crowdsec}
+  #   restart: unless-stopped
+  #   networks:
+  #     - proxy
+  #     # ^^^ REQUIRED: caddy reaches it as http://crowdsec:8080 (LAPI) and
+  #     #     http://crowdsec:7422 (AppSec). Same net = DNS resolves. No net = bouncer fails open/closed per your Caddyfile.
+  #   ports:
+  #     # ^^^ YOUR CHOICE: default EXPOSES NOTHING publicly (127.0.0.1 only).
+  #     #     LAPI :8080 = caddy bouncer + cscli. AppSec :7422 = WAF intake.
+  #     #     Remove these lines entirely if you only use `docker exec`.
+  #     - "127.0.0.1:${CROWDSEC_LAPI_PORT:-8080}:8080"
+  #     - "127.0.0.1:${CROWDSEC_APPSEC_PORT:-7422}:7422"
+  #   environment:
+  #     - "TZ=${TZ:-Etc/UTC}"
+  #     # ^^^ YOUR CHOICE: set TZ=Asia/Kolkata / America/New_York / etc. Affects log timestamps only.
+  #     - "USE_WAL=true"
+  #     # ^^^ YOUR CHOICE: keep true (crash-safe SQLite). False = legacy journal mode.
+  #     - "COLLECTIONS=${CROWDSEC_COLLECTIONS:-crowdsecurity/linux crowdsecurity/caddy}"
+  #     # ^^^ YOUR CHOICE: scenario packs. MINIMAL: crowdsecurity/caddy alone.
+  #     #     Add crowdsecurity/sshd if CrowdSec also watches host SSH (needs /var/log mounts below).
+  #     #     Full list: https://app.crowdsec.net/hub/collections
+  #   volumes:
+  #     - crowdsec-conf:/etc/crowdsec
+  #     # ^^^ REQUIRED: scenarios, profiles, acquis. First start populates it.
+  #     - crowdsec-data:/var/lib/crowdsec/data
+  #     # ^^^ REQUIRED: bans, decisions, SQLite. Back up with caddy_data.
+  #     - ./logs:/shared-logs:ro
+  #     # ^^^ YOUR CHOICE (recommended): Caddy access logs for AppSec scenarios.
+  #     #     Requires the ./logs mount on CADDY too (see above) + a Caddyfile
+  #     #     `log { output file /shared-logs/access.log }` block. Skip if LAPI-only.
+  #     # --- Host logs — YOUR CHOICE: uncomment ONLY to watch host SSH/syslog.
+  #     # - /var/log:/var/log:ro
+  #     # - /var/log/journal:/run/log/journal:ro
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "cscli lapi status"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 60s
+  #     start_interval: 5s
+  #   stop_grace_period: 30s
+  #   logging: *default-logging
+
+  # ===========================================================================
+  # POCKET-ID — passkey-first OIDC identity provider. OPTIONAL, OFF by default.
+  # YOUR CHOICE: uncomment for Mode 2 / Mode 3 (SSO).
+  # What it is: where your users LOG IN (passkeys, no passwords). oauth2-proxy
+  # asks pocket-id "is this user legit?" — pocket-id answers via OIDC.
+  # FIRST-RUN ORDER MATTERS: start pocket-id FIRST, open its URL, create admin,
+  # create an OIDC client for oauth2-proxy, THEN fill oauth2.env + start proxy.
+  # Docs: https://pocket-id.org/docs
+  # ===========================================================================
+  # pocket-id:
+  #   image: pocketid/pocket-id:${POCKETID_TAG:-latest}
+  #   # ^^^ YOUR CHOICE: latest floats. Pin to freeze.
+  #   container_name: ${POCKETID_NAME:-pocket-id}
+  #   restart: unless-stopped
+  #   init: true
+  #   # ^^^ REQUIRED: reaps zombie processes (Go binary as PID 1). Keep true.
+  #   networks:
+  #     - proxy
+  #     # ^^^ REQUIRED: caddy reverse_proxies to http://pocket-id:1411 by name.
+  #   ports:
+  #     # ^^^ YOUR CHOICE: default localhost-only (debug via ssh tunnel).
+  #     #     Caddy reaches it on the `proxy` net — NO public port needed.
+  #     #     Delete these lines if you only access via your domain.
+  #     - "127.0.0.1:${POCKETID_PORT:-1411}:1411"
+  #   env_file:
+  #     - ./pocketid.env
+  #     # ^^^ REQUIRED file (chmod 600): APP_URL, ENCRYPTION_KEY, etc.
+  #     #     See pocketid.env.example. Generate secrets with: openssl rand -hex 32
+  #   volumes:
+  #     - pocketid-data:/app/data
+  #     # ^^^ REQUIRED: users, clients, keys. LOSE THIS = re-register everyone.
+  #   environment:
+  #     - "TZ=${TZ:-Etc/UTC}"
+  #     - "TRUST_PROXY=true"
+  #     # ^^^ REQUIRED behind Caddy: honor X-Forwarded-* for correct URLs. Keep true.
+  #     - "PUID=${PUID:-1000}"
+  #     - "PGID=${PGID:-1000}"
+  #     # ^^^ YOUR CHOICE: file ownership for /app/data. Match your host user (id -u / id -g).
+  #   healthcheck:
+  #     test: ["CMD", "/app/pocket-id", "healthcheck"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 2
+  #     start_period: 10s
+  #   logging: *default-logging
+
+  # ===========================================================================
+  # OAUTH2-PROXY — OIDC gate between Caddy and your apps. OPTIONAL, OFF default.
+  # YOUR CHOICE: uncomment for Mode 2 / Mode 3 (SSO).
+  # What it is: Caddy asks "forward_auth oauth2-proxy:4180 — is this request
+  # authed?" Proxy checks its cookie; if missing, bounces to pocket-id login,
+  # then back. Apps behind it see X-Forwarded-User/Email/Groups headers.
+  # REQUIRES pocket-id (above) to be running + configured FIRST.
+  # Docs: https://oauth2-proxy.github.io/oauth2-proxy
+  # ===========================================================================
+  # oauth2-proxy:
+  #   image: quay.io/oauth2-proxy/oauth2-proxy:${OAUTH2_TAG:-latest}
+  #   # ^^^ YOUR CHOICE: latest floats. Pin to freeze.
+  #   container_name: ${OAUTH2_NAME:-oauth2-proxy}
+  #   restart: unless-stopped
+  #   networks:
+  #     - proxy
+  #     # ^^^ REQUIRED (bridge mode, this file's default): caddy reaches it as
+  #     #     http://oauth2-proxy:4180. ALTERNATIVE (author's VPS): network_mode: host
+  #     #     + caddy `forward_auth host.docker.internal:4180` + extra_hosts on caddy.
+  #     #     Host mode survives docker-net hiccups; bridge mode is simpler. YOUR CHOICE.
+  #   ports:
+  #     # ^^^ YOUR CHOICE: localhost-only debug port. Caddy uses the internal
+  #     #     4180 on `proxy` net — no public port needed. Delete if unused.
+  #     - "127.0.0.1:${OAUTH2_PORT:-4180}:4180"
+  #   env_file:
+  #     - ./oauth2.env
+  #     # ^^^ REQUIRED file (chmod 600): issuer URL, client ID/secret, cookie
+  #     #     secret, cookie domain, redirect URL. See oauth2.env.example.
+  #     #     Generate cookie secret with: openssl rand -base64 32 | head -c 32
+  #   # --- File secrets — YOUR CHOICE: STRONGLY recommended over env plaintext.
+  #   # --- Create files with: openssl rand -hex 32 > oauth2_client_secret && chmod 600 ...
+  #   # --- Then uncomment + reference via _FILE vars in oauth2.env.
+  #   # secrets:
+  #   #   - oauth2_client_secret
+  #   #   - oauth2_cookie_secret
+  #   stop_grace_period: 20s
+  #   logging: *default-logging
+
+  # ===========================================================================
+  # GEOIPUPDATE — MaxMind DB refresher (24h). OPTIONAL, OFF by default.
+  # YOUR CHOICE: uncomment ONLY if your Caddyfile uses maxmind_geolocation.
+  # What it is: downloads GeoLite2-Country/City/ASN into shared volume.
+  # Needs a FREE MaxMind account: https://www.maxmind.com/en/geolite2/signup
+  # Cost: one tiny container + 100MB volume. Benefit: country allow/deny rules.
+  # ===========================================================================
+  # geoipupdate:
+  #   image: ghcr.io/maxmind/geoipupdate:${GEOIP_TAG:-latest}
+  #   container_name: ${GEOIP_NAME:-geoipupdate}
+  #   restart: unless-stopped
+  #   # ^^^ NOTE: no networks, no ports — writes files only. Correct as-is.
+  #   env_file:
+  #     - ./geoipupdate.env
+  #     # ^^^ REQUIRED file (chmod 600): account ID + license key. See example.
+  #   volumes:
+  #     - geoip-data:/usr/share/GeoIP
+  #     # ^^^ REQUIRED: shared with caddy (caddy mounts same volume :ro).
+  #   logging: *default-logging
+
+  # ===========================================================================
+  # DEMO BACKEND — throwaway test app. OPTIONAL, OFF by default.
+  # YOUR CHOICE: uncomment to verify your edge end-to-end BEFORE pointing
+  # real apps at it. `curl -H "Host: demo.example.com" http://localhost` should
+  # return request details. Delete once your real app is wired.
+  # ===========================================================================
+  # demo:
+  #   image: traefik/whoami:${WHOAMI_TAG:-latest}
+  #   container_name: ${DEMO_NAME:-demo}
+  #   restart: unless-stopped
+  #   networks:
+  #     - proxy
+  #   logging: *default-logging
+
+# ---------------------------------------------------------------------------
+# SECRETS (file-based) — YOUR CHOICE: uncomment ONLY if you use _FILE vars.
+# Stronger than env plaintext (never in `docker inspect`). Create files first:
+#   openssl rand -hex 32 > oauth2_client_secret && chmod 600 oauth2_client_secret
+# ---------------------------------------------------------------------------
+# secrets:
+#   oauth2_client_secret:
+#     file: ./oauth2_client_secret
+#   oauth2_cookie_secret:
+#     file: ./oauth2_cookie_secret
+
+networks:
+  proxy:
+    # ^^^ YOUR CHOICE: internal bridge (default below) = self-contained, apps in
+    #     THIS file join automatically. ALTERNATIVE: external shared net for apps
+    #     in OTHER compose files:
+    #       proxy:
+    #         external: true
+    #     Then each backend adds `networks: [proxy]`. External = your call.
+    driver: bridge
+
+volumes:
+  caddy_data:
+    # ^^^ Certs + ACME state. BACK THIS UP (restic/borg/tar). See README.
+  caddy_config:
+    # ^^^ Disposable cache. Safe to `docker volume rm` any time.
+  # --- Uncomment WITH their services above. YOUR CHOICE, must match.
+  # crowdsec-conf:
+  # crowdsec-data:
+  # pocketid-data:
+  # geoip-data:

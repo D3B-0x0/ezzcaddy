@@ -1,0 +1,241 @@
+# =============================================================================
+# ezzcaddy — UNIVERSAL Caddyfile (pairs with docker-compose.full.yaml)
+# =============================================================================
+# PHILOSOPHY: every protection is OPT-IN. Nothing gates you unless YOU add
+# the line. Copy this file to `Caddyfile`, then DELETE everything except the
+# global block + the ONE site recipe you start with. Add more sites one by one.
+#
+#   Recipe A — PUBLIC:    plain reverse_proxy. No WAF, no login. (APIs, blogs)
+#   Recipe B — WAF-ONLY:  + crowdsec + appsec. (public but scanner-hardened)
+#   Recipe C — SSO-GATED: + forward_auth to oauth2-proxy. (dashboards, admin)
+#   Recipe D — MAX:       WAF + SSO + GeoIP + scoped rate_limit. (crown jewels)
+#
+# VALIDATE EVERY EDIT (zero-downtime reload, bad config keeps old one serving):
+#   docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+#   docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+#
+# LOG RULE: `log { output stdout }` PER SITE = access logs. A global `log`
+# block ALONE only configures the process logger — it does NOT log requests.
+# For CrowdSec AppSec file intake, log to /shared-logs (needs ./logs mount).
+# =============================================================================
+
+{
+	# --- ADMIN API — YOUR CHOICE: keep default (localhost:2019 INSIDE container).
+	# --- Never publish :2019. Reach it via `docker exec caddy wget -qO- ...`.
+	# admin off   # YOUR CHOICE: uncomment to DISABLE admin API entirely.
+
+	# --- DNS-01 ACME — YOUR CHOICE: pick EXACTLY ONE provider block.
+	# --- All 90+ providers are compiled in. Token comes from caddy.env via
+	# --- {env.VAR} at RUNTIME — never write secrets literally in this file.
+	# --- DNS-01 = wildcard certs + works behind NAT/CGNAT + no port 80 needed.
+	# --- Comment ALL of these out = fall back to HTTP-01/TLS-ALPN (needs :80/:443 public).
+
+	# Option 1 — Cloudflare (Zone:Read + DNS:Edit token):
+	# acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+
+	# Option 2 — AWS Route53 (needs AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in caddy.env):
+	# acme_dns route53
+
+	# Option 3 — DigitalOcean (needs DO_AUTH_TOKEN in caddy.env):
+	# acme_dns digitalocean {env.DO_AUTH_TOKEN}
+
+	# Option 4 — DuckDNS (needs DUCKDNS_TOKEN in caddy.env, TXT-only, no wildcard root):
+	# acme_dns duckdns {env.DUCKDNS_TOKEN}
+
+	# Option 5 — Porkbun (needs PORKBUN_API_KEY + PORKBUN_SECRET_API_KEY in caddy.env):
+	# acme_dns porkbun {
+	# 	api_key {env.PORKBUN_API_KEY}
+	# 	api_secret_key {env.PORKBUN_SECRET_API_KEY}
+	# }
+
+	# Option N — ANY other compiled provider works the same way:
+	# acme_dns <name> <credentials-from-env>
+	# Full provider list: https://github.com/orgs/caddy-dns/repositories
+
+	# --- EMAIL FOR ACME — YOUR CHOICE: Let's Encrypt expiry + quota notices.
+	# email {env.ACME_EMAIL}
+
+	# --- CROWDSEC — YOUR CHOICE: uncomment ONLY with `crowdsec:` service running.
+	# --- `order` lines are MANDATORY — without them Caddy rejects the config.
+	# order crowdsec first
+	# order appsec after crowdsec
+	# crowdsec {
+	# 	api_url http://crowdsec:8080
+	# 	api_key {env.CROWDSEC_CADDY_KEY}
+	# 	appsec_url http://crowdsec:7422
+	# }
+}
+
+# =============================================================================
+# SNIPPETS — reusable fragments. Import with `import <name>` inside a site.
+# YOUR CHOICE: use them, copy-paste them, or ignore them. They do NOTHING
+# unless imported.
+# =============================================================================
+
+# --- (secure-headers) — YOUR CHOICE: import in EVERY site. Free hardening.
+# --- HSTS needs https (automatic here). Skip HSTS on http-only dev domains.
+(secure-headers) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# -Server  # YOUR CHOICE: uncomment to hide `Server: Caddy` fingerprint.
+	}
+}
+
+# --- (crowdsec) — YOUR CHOICE: import for Recipe B/D. Needs global block above.
+# (crowdsec) {
+# 	crowdsec
+# 	appsec
+# }
+
+# --- (sso-gate) — YOUR CHOICE: import for Recipe C/D. Needs oauth2-proxy running.
+# --- How it works: anonymous users (no _oauth2_proxy cookie) get bounced to
+# --- the login portal; authed requests pass through with identity headers.
+# --- SSO_DOMAIN below = your oauth2-proxy public URL (e.g. sso.example.com).
+# --- BRIDGE MODE (this repo default): forward_auth oauth2-proxy:4180
+# --- HOST MODE (author's VPS legacy): forward_auth host.docker.internal:4180
+# ---   + `extra_hosts: host.docker.internal:host-gateway` on caddy service.
+(sso-gate) {
+	route {
+		@anon {
+			not header Cookie *_oauth2_proxy=*
+		}
+		handle @anon {
+			redir https://{env.SSO_DOMAIN}/oauth2/start?rd=https://{http.request.host}{http.request.uri} 302
+		}
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			copy_headers X-Forwarded-User X-Forwarded-Email X-Forwarded-Groups X-Forwarded-Preferred-Username
+		}
+	}
+}
+
+# --- (geoip-allow) — YOUR CHOICE: import for country allow-listing. Needs
+# --- geoipupdate service + `geoip-data` volume mounted in caddy.
+# --- YOUR CHOICE: edit the country list. ISO-3166 alpha-2 codes.
+# (geoip-allow) {
+# 	@geo-blocked {
+# 		not maxmind_geolocation {
+# 			db_path /usr/share/GeoIP/GeoLite2-Country.mmdb
+# 			allow_countries IN US DE IN GB
+# 		}
+# 	}
+# 	respond @geo-blocked 403
+# }
+
+# --- (login-ratelimit) — YOUR CHOICE: scoped flood guard. SCOPE IT, never blanket.
+# --- A global zone 429s real users (one page = 10-20 subrequests). This zone
+# --- ONLY counts /login + /oauth2/* paths. Tune events/window to your app.
+# (login-ratelimit) {
+# 	rate_limit {
+# 		zone login {
+# 			match {
+# 				path /login /oauth2/* /auth/*
+# 			}
+# 			events 10
+# 			window 1m
+# 		}
+# 	}
+# }
+
+# =============================================================================
+# RECIPE A — PUBLIC (default ON: the only active block, edit domain + target)
+# No WAF, no login. For blogs, marketing, public APIs with own key auth.
+# YOUR CHOICE: this is your starting point. Change domain + upstream, reload.
+# =============================================================================
+demo.example.com {
+	import secure-headers
+	log {
+		output stdout
+		format json
+	}
+	# --- File log for CrowdSec — YOUR CHOICE: uncomment with crowdsec service.
+	# log {
+	# 	output file /shared-logs/access.log {
+	# 		roll_size 50mb
+	# 		roll_keep 5
+	# 	}
+	# 	format json
+	# }
+	reverse_proxy demo:80
+	# ^^^ YOUR CHOICE: `demo:80` = the demo service in compose. Replace with
+	#     YOUR app: `reverse_proxy myapp:3000` (same `proxy` net = resolves).
+}
+
+# =============================================================================
+# RECIPE B — WAF-ONLY (OFF by default: uncomment for scanner-hardened public)
+# YOUR CHOICE: public URL, but CrowdSec 403s scanners/bots at the edge.
+# Needs: crowdsec service + global crowdsec block + CROWDSEC_CADDY_KEY.
+# =============================================================================
+# app.example.com {
+# 	import secure-headers
+# 	# import crowdsec
+# 	log {
+# 		output stdout
+# 		format json
+# 	}
+# 	reverse_proxy myapp:3000
+# }
+
+# =============================================================================
+# RECIPE C — SSO-GATED (OFF by default: uncomment for private dashboards)
+# YOUR CHOICE: anyone without login bounces to SSO. Needs oauth2-proxy +
+# pocket-id running, SSO_DOMAIN in caddy.env, (sso-gate) snippet above.
+# TIP: keep API backends UNGATED (keys break under cookie auth) — gate the UI.
+# =============================================================================
+# private.example.com {
+# 	import secure-headers
+# 	# import crowdsec
+# 	import sso-gate
+# 	log {
+# 		output stdout
+# 		format json
+# 	}
+# 	reverse_proxy internal-dashboard:3000
+# }
+
+# =============================================================================
+# RECIPE D — MAX LOCKDOWN (OFF by default: uncomment for crown jewels)
+# WAF + SSO + GeoIP + scoped rate limit. Every layer must pass.
+# Needs: crowdsec + oauth2-proxy + pocket-id + geoipupdate ALL running.
+# YOUR CHOICE: edit allow_countries + rate window to your threat model.
+# =============================================================================
+# vault.example.com {
+# 	import secure-headers
+# 	# import crowdsec
+# 	import sso-gate
+# 	# import geoip-allow
+# 	# import login-ratelimit
+# 	log {
+# 		output stdout
+# 		format json
+# 	}
+# 	reverse_proxy vault:8200
+# }
+
+# =============================================================================
+# SSO INFRA SITES — OFF by default: uncomment ONLY in SSO mode.
+# auth.* = pocket-id login UI. sso.* = oauth2-proxy portal/callback.
+# YOUR CHOICE: subdomains are convention — keep or rename, but OIDC redirect
+# URLs in pocket-id + oauth2.env MUST match whatever you choose here.
+# =============================================================================
+# auth.example.com {
+# 	import secure-headers
+# 	log {
+# 		output stdout
+# 		format json
+# 	}
+# 	reverse_proxy pocket-id:1411
+# }
+#
+# sso.example.com {
+# 	import secure-headers
+# 	log {
+# 		output stdout
+# 		format json
+# 	}
+# 	reverse_proxy oauth2-proxy:4180
+# }

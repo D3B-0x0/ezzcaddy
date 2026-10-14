@@ -1,3 +1,13 @@
+# Real secrets + local runtime — never commit.
 *.env
 caddy.env
 geoipupdate.env
+oauth2.env
+pocketid.env
+*_secret
+*_cookie_secret
+# Local Caddyfile (built from Caddyfile.full) — your domains stay yours.
+Caddyfile
+# Local log share + pocket-id data (if bind-mounted for dev).
+logs/
+data/
