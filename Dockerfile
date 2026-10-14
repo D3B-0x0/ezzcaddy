@@ -1,119 +1,55 @@
-# ezzcaddy: stock Caddy + EVERY DNS-01 provider + security modules.
-# Base + security modules are always on. DNS providers are ALL compiled in —
-# you CHOOSE one at runtime in your Caddyfile (acme_dns <name>). Unused
-# providers cost disk (~100MB extra) but zero CPU/RAM. Nothing runs unless
+# ezzcaddy: stock Caddy + 29 curated DNS-01 providers + security modules.
+# You CHOOSE one provider at runtime in your Caddyfile (acme_dns <name>).
+# Unused providers cost disk (~extra MB) but zero CPU/RAM. Nothing runs unless
 # your Caddyfile references it.
 #
+# THE 29: the most-used DNS providers (homelab + VPS + registrar + hyperscaler
+# + regional cloud), curated 2026-10-14. Covers ~95% of real users. Deliberately
+# EXCLUDED: exotic regional APIs, resellers, empty/abandoned repos, and 4
+# providers whose libs never adapted to the libdns v1 API (leaseweb, katapult,
+# exoscale, civo — they cannot compile alongside modern providers in one
+# binary; verified 2026-10-14, re-add if upstream fixes them).
+# To add one back: append `--with github.com/caddy-dns/<name>` below.
 # To slim down: delete lines you never use, keep only your provider(s).
-# Rebuild via CI (weekly) or: docker build -t ezzcaddy .
 #
-# NOTE: template / lego-deprecated / acmeproxy are intentionally excluded
-# (not real DNS providers). Everything else from org caddy-dns is included.
-#
-# PIN NOTE (2026-10-14): 17 providers have NEVER cut a version tag, so a bare
-# --with fails with "no matching versions for query upgrade". Those are pinned
-# to their default branch (@main/@master/…). Same float-by-design philosophy
-# as the rest — weekly rebuilds still pick up whatever is current. If a pinned
-# branch ever renames upstream, the CI build error names the culprit; re-pin.
+# PIN NOTE: digitalocean/vultr never cut a version tag, so a bare --with
+# fails with "no matching versions for query upgrade". Those two are pinned
+# to @master — same float-by-design as the rest.
+# REPLACE NOTE: caddy-dns/vercel still pulls libdns/vercel v0.0.2 (old API);
+# the --replace below forces v0.1.0 (new API). Drop the replace if the wrapper
+# ever updates its requirement. Syntax per xcaddy wiki: old@v= new@v.
 FROM caddy:2-builder-alpine AS builder
 RUN xcaddy build \
-  --with github.com/caddy-dns/acmedns \
   --with github.com/caddy-dns/alidns \
-  --with github.com/caddy-dns/all-inkl \
-  --with github.com/caddy-dns/arvancloud \
-  --with github.com/caddy-dns/autodns@main \
   --with github.com/caddy-dns/azure \
-  --with github.com/caddy-dns/bluecat \
   --with github.com/caddy-dns/bunny \
-  --with github.com/caddy-dns/civo@main \
   --with github.com/caddy-dns/cloudflare \
-  --with github.com/caddy-dns/cloudns \
-  --with github.com/caddy-dns/conoha \
-  --with github.com/caddy-dns/ddnss@master \
   --with github.com/caddy-dns/desec \
   --with github.com/caddy-dns/digitalocean@master \
-  --with github.com/caddy-dns/dinahosting \
-  --with github.com/caddy-dns/directadmin \
-  --with github.com/caddy-dns/dnsexit \
-  --with github.com/caddy-dns/dnsimple@main \
-  --with github.com/caddy-dns/dnsmadeeasy \
-  --with github.com/caddy-dns/dnspod \
-  --with github.com/caddy-dns/dode \
-  --with github.com/caddy-dns/domainnameshop \
-  --with github.com/caddy-dns/dreamhost \
   --with github.com/caddy-dns/duckdns \
-  --with github.com/caddy-dns/dynu \
-  --with github.com/caddy-dns/dynv6@main \
-  --with github.com/caddy-dns/easydns \
-  --with github.com/caddy-dns/edgeone \
-  --with github.com/caddy-dns/ednsde \
-  --with github.com/caddy-dns/enum \
-  --with github.com/caddy-dns/exoscale \
   --with github.com/caddy-dns/gandi \
-  --with github.com/caddy-dns/gcore@main \
-  --with github.com/caddy-dns/glesys \
   --with github.com/caddy-dns/godaddy \
   --with github.com/caddy-dns/googleclouddns \
-  --with github.com/caddy-dns/google-domains@master \
-  --with github.com/caddy-dns/he \
   --with github.com/caddy-dns/hetzner \
-  --with github.com/caddy-dns/hexonet \
-  --with github.com/caddy-dns/hosttech \
-  --with github.com/caddy-dns/httpnet@master \
   --with github.com/caddy-dns/huaweicloud \
   --with github.com/caddy-dns/infomaniak \
   --with github.com/caddy-dns/inwx \
   --with github.com/caddy-dns/ionos \
-  --with github.com/caddy-dns/katapult \
-  --with github.com/caddy-dns/leaseweb \
-  --with github.com/caddy-dns/liara@master \
   --with github.com/caddy-dns/linode \
-  --with github.com/caddy-dns/loopia \
-  --with github.com/caddy-dns/luadns \
-  --with github.com/caddy-dns/mailinabox \
-  --with github.com/caddy-dns/metaname \
-  --with github.com/caddy-dns/mijnhost \
-  --with github.com/caddy-dns/mittwald \
-  --with github.com/caddy-dns/mythicbeasts \
   --with github.com/caddy-dns/namecheap \
-  --with github.com/caddy-dns/namedotcom \
-  --with github.com/caddy-dns/namesilo@master \
-  --with github.com/caddy-dns/nanelo \
-  --with github.com/caddy-dns/neoserv \
   --with github.com/caddy-dns/netcup \
   --with github.com/caddy-dns/netlify \
-  --with github.com/caddy-dns/netnod \
-  --with github.com/caddy-dns/nfsn \
-  --with github.com/caddy-dns/nicrudns@main \
   --with github.com/caddy-dns/njalla \
-  --with github.com/caddy-dns/openstack-designate \
   --with github.com/caddy-dns/oraclecloud \
   --with github.com/caddy-dns/ovh \
-  --with github.com/caddy-dns/parspack \
   --with github.com/caddy-dns/porkbun \
-  --with github.com/caddy-dns/powerdns \
-  --with github.com/caddy-dns/pph \
-  --with github.com/caddy-dns/regery \
-  --with github.com/caddy-dns/regfish@main \
   --with github.com/caddy-dns/rfc2136 \
   --with github.com/caddy-dns/route53 \
   --with github.com/caddy-dns/scaleway \
-  --with github.com/caddy-dns/selectel \
-  --with github.com/caddy-dns/servercow@main \
-  --with github.com/caddy-dns/simplydotcom \
-  --with github.com/caddy-dns/spaceship \
-  --with github.com/caddy-dns/tecnocratica \
   --with github.com/caddy-dns/tencentcloud \
-  --with github.com/caddy-dns/thelittlehost \
-  --with github.com/caddy-dns/timeweb \
-  --with github.com/caddy-dns/totaluptime@main \
-  --with github.com/caddy-dns/transip \
-  --with github.com/caddy-dns/unifi \
   --with github.com/caddy-dns/vercel \
-  --with github.com/caddy-dns/volcengine \
+  --replace github.com/libdns/vercel@v0.0.2=github.com/libdns/vercel@v0.1.0 \
   --with github.com/caddy-dns/vultr@master \
-  --with github.com/caddy-dns/websupport@add-libdns-wrapper \
-  --with github.com/caddy-dns/wedos \
   --with github.com/hslatman/caddy-crowdsec-bouncer/http \
   --with github.com/porech/caddy-maxmind-geolocation \
   --with github.com/mholt/caddy-ratelimit \

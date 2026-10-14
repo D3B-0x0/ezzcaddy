@@ -187,7 +187,7 @@ ARM / Raspberry Pi: `git clone` + `docker build .` — works, just slower.
 
 | Module | What it gives you | When it runs |
 |---|---|---|
-| `caddy-dns/*` (all ~95 providers) | DNS-01 ACME — wildcard certs, no open port 80, works behind NAT/CGNAT | When your Caddyfile has an `acme_dns <name>` line |
+| `caddy-dns/*` (29 curated providers — list below) | DNS-01 ACME — wildcard certs, no open port 80, works behind NAT/CGNAT | When your Caddyfile has an `acme_dns <name>` line |
 | `caddy-crowdsec-bouncer/http` | `crowdsec` + `appsec` directives — firewall + bans via your own CrowdSec | When you add `crowdsec` / `appsec` to a site |
 | `caddy-maxmind-geolocation` | Country matchers (`allow_countries` / `deny_countries`) | When you add a `maxmind_geolocation` matcher (needs a `.mmdb`) |
 | `caddy-ratelimit` | `rate_limit` zones (always scope with `match`) | When you add a `rate_limit` block |
@@ -197,6 +197,24 @@ Deliberately absent: `caddy-security` (would duplicate oauth2-proxy +
 Pocket-ID — one login system, not two), exec/script plugins (remote-execution
 risk), cache (invalidation bugs cost more than the latency saved), Docker-label
 auto-discovery (explicit Caddyfile beats magic for a security edge).
+
+### Included DNS providers (29 — verified in the built image 2026-10-14)
+
+Homelab + registrar: `cloudflare`, `duckdns`, `porkbun`, `godaddy`,
+`namecheap`, `desec`, `gandi`, `njalla`, `inwx`, `ionos`, `infomaniak`,
+`netlify`, `vercel`, `bunny`
+VPS + cloud: `digitalocean`, `vultr`, `linode`, `hetzner`, `ovh`,
+`scaleway`, `netcup`, `oraclecloud`, `azure`, `googleclouddns`,
+`route53`, `alidns`, `huaweicloud`, `tencentcloud`
+Self-hosted: `rfc2136` (works with BIND/Knot/your own nameserver)
+
+Not in the image: exotic regional APIs, resellers, empty repos (`autodns`,
+`nicrudns`, `totaluptime` — zero commits upstream), and 4 whose libs never
+adapted to the libdns v1 API (`leaseweb`, `katapult`, `exoscale`, `civo` —
+they cannot compile alongside modern providers in one binary; re-added if
+upstream fixes them). `vercel` is rescued via a `--replace` to its fixed
+lib release (see `Dockerfile`). The `Dockerfile` is the source of truth —
+one `--with` per line.
 
 ---
 
@@ -336,7 +354,7 @@ Production: pin a dated tag, bump deliberately.
 ```bash
 git clone https://codeberg.org/D3B-0x0/ezzcaddy.git
 cd ezzcaddy
-docker build -t ezzcaddy .     # ~10 min with all DNS providers, amd64
+docker build -t ezzcaddy .     # ~3 min with 29 DNS providers, amd64
 ```
 
 Build needs `proxy.golang.org` + `storage.googleapis.com` — `dial tcp
@@ -354,7 +372,7 @@ sudo ./mk-geoip-env.sh
 ## Repo layout
 
 ```
-Dockerfile                    the image (all DNS providers + 4 security modules)
+Dockerfile                    the image (29 curated DNS providers + 4 security modules)
 examples/                     everything a user touches (see File map above)
 mk-geoip-env.sh               helper: geoipupdate.env from /opt/secrets
 .github/workflows/docker.yml  CI: build+push on change + weekly + manual
